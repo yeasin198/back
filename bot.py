@@ -14,17 +14,14 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ForceRepl
 from pyrogram.errors import UserNotParticipant, FloodWait, ChatAdminRequired
 from motor.motor_asyncio import AsyncIOMotorClient
 
-# ================= লগিং সেটআপ (এরর ট্র্যাক করার জন্য) =================
-
+# ================= লগিং সেটআপ =================
 logging.basicConfig(
     level=logging.INFO, 
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
-# Fixed: name এর বদলে __name__ হবে
-logger = logging.getLogger(__name__) 
+logger = logging.getLogger(__name__)
 
 # ================= কনফিগারেশন =================
-
 try: 
     API_ID = int(os.environ.get("API_ID", "29904834")) 
 except ValueError:
@@ -43,17 +40,7 @@ except ValueError:
     DB_CHANNEL_ID = 0 
     PORT = 10000
 
-# ================= ডাটাবেস সেটআপ =================
-
-mongo_client = AsyncIOMotorClient(MONGO_URI if MONGO_URI else "mongodb://localhost:27017") 
-db = mongo_client["UltimateProBot"] 
-users_db = db["users"] 
-settings_db = db["settings"] 
-files_db = db["files"] 
-redeem_db = db["redeem_codes"] 
-tokens_db = db["tokens"] 
-channels_db = db["channels"]
-
+# ================= Pyrogram ক্লায়েন্ট =================
 app = Client( 
     "MyBot", 
     api_id=API_ID if API_ID != 0 else 12345,
@@ -61,10 +48,31 @@ app = Client(
     bot_token=BOT_TOKEN if BOT_TOKEN else "123:dummy" 
 )
 
-# ================= হেল্পার ফাংশনস =================
+# ================= গ্লোবাল ডাটাবেস ভেরিয়েবল =================
+mongo_client = None
+db = None
+users_db = None
+settings_db = None
+files_db = None
+redeem_db = None
+tokens_db = None
+channels_db = None
 
+async def init_db():
+    """Motor Client ইভেন্ট লুপের ভেতরে রান করার জন্য ফাংশন"""
+    global mongo_client, db, users_db, settings_db, files_db, redeem_db, tokens_db, channels_db
+    mongo_client = AsyncIOMotorClient(MONGO_URI if MONGO_URI else "mongodb://localhost:27017")
+    db = mongo_client["UltimateProBot"] 
+    users_db = db["users"] 
+    settings_db = db["settings"] 
+    files_db = db["files"] 
+    redeem_db = db["redeem_codes"] 
+    tokens_db = db["tokens"] 
+    channels_db = db["channels"]
+    logger.info("✅ Database Connected Successfully!")
+
+# ================= হেল্পার ফাংশনস =================
 async def get_settings(): 
-    """সেটিংস ডাটাবেস থেকে লোড করবে, না থাকলে ডিফল্ট তৈরি করবে""" 
     setting = await settings_db.find_one({"_id": "config"}) 
     if not setting:
         default = { "_id": "config", "links": {}, "force_subs": [], "shorteners": {}, "batch_size": 1, "delete_time": 0, "locked": False } 
@@ -73,7 +81,6 @@ async def get_settings():
     return setting
 
 async def check_force_sub(client, user_id): 
-    """ফোর্স সাবস্ক্রাইব চেক করার ফাংশন""" 
     settings = await get_settings() 
     channels = settings.get("force_subs", []) 
     for channel in channels: 
@@ -87,7 +94,6 @@ async def check_force_sub(client, user_id):
     return True
 
 async def auto_delete_message(message, delay): 
-    """নির্দিষ্ট সময় পর মেসেজ ডিলিট করবে""" 
     if delay > 0: 
         await asyncio.sleep(delay) 
         try: 
@@ -96,7 +102,6 @@ async def auto_delete_message(message, delay):
             logger.error(f"Failed to auto delete message: {e}")
 
 def parse_duration(time_str): 
-    """স্ট্রিং থেকে সেকেন্ডে কনভার্ট করবে (10m, 1h, 1d)""" 
     try: 
         unit = time_str[-1].lower() 
         val = int(time_str[:-1]) 
@@ -108,13 +113,11 @@ def parse_duration(time_str):
         return 0
 
 async def generate_short_link(long_url): 
-    """শর্টনার এপিআই দিয়ে লিংক শর্ট করবে (ভার্সেল বা অন্যান্য)""" 
     settings = await get_settings() 
     shorteners = settings.get("shorteners", {}) 
     if not shorteners: 
         return long_url
 
-    # যেকোনো একটি শর্টনার ব্যবহার করবে
     shortener = list(shorteners.values())[0] 
     domain = shortener.get("domain")
     token = shortener.get("token")
@@ -136,7 +139,6 @@ async def generate_short_link(long_url):
     return long_url
 
 async def send_file_to_user(client, chat_id, file_data): 
-    """ইউজারকে সুরক্ষিতভাবে ডাটাবেস থেকে ফাইল পাঠাবে""" 
     settings = await get_settings() 
     is_protected = settings.get("locked", False) 
     delete_delay = settings.get("delete_time", 0)
@@ -158,33 +160,26 @@ async def send_file_to_user(client, chat_id, file_data):
         await client.send_message(chat_id, "❌ ফাইলটি পাঠাতে সমস্যা হয়েছে।")
 
 async def process_serial_files(client, user_id, chat_id, start_idx, batch_size):
-    """সিরিয়াল অনুযায়ী ইউজারকে ফাইল পাঠাবে এবং প্রগ্রেস সেভ করবে""" 
     cursor = files_db.find({"source_chat": chat_id}).sort("original_msg_id", 1).skip(start_idx).limit(batch_size) 
     files = await cursor.to_list(length=batch_size)
 
     if not files:
-        return False # কোনো ফাইল পাওয়া যায়নি
+        return False 
         
     for f in files:
         await send_file_to_user(client, user_id, f)
-        await asyncio.sleep(0.5) # Flood wait এড়াতে
+        await asyncio.sleep(0.5)
     
-    # ইউজারের প্রগ্রেস আপডেট করা হচ্ছে
     new_progress = start_idx + len(files)
-    await users_db.update_one(
-        {"_id": user_id}, 
-        {"$set": {f"progress.{chat_id}": new_progress}}
-    )
+    await users_db.update_one({"_id": user_id}, {"$set": {f"progress.{chat_id}": new_progress}})
     return True
 
 # ================= স্টার্ট কমান্ড এবং ভেরিফিকেশন সিস্টেম =================
-
 @app.on_message(filters.command("start") & filters.private) 
 async def cmd_start(client, message): 
     user = message.from_user 
     settings = await get_settings()
 
-    # ১. ফোর্স সাবস্ক্রাইব চেক
     if not await check_force_sub(client, user.id):
         buttons = []
         for ch in settings.get("force_subs", []):
@@ -201,7 +196,6 @@ async def cmd_start(client, message):
             reply_markup=InlineKeyboardMarkup(buttons)
         )
     
-    # ২. ইউজার ডাটাবেস আপডেট
     user_data = await users_db.find_one({"_id": user.id})
     if not user_data:
         user_data = {"_id": user.id, "name": user.first_name, "premium_until": 0, "progress": {}}
@@ -209,11 +203,9 @@ async def cmd_start(client, message):
     
     is_premium = user_data.get("premium_until", 0) > time.time()
     
-    # ৩. স্টার্ট প্যারামিটার হ্যান্ডলিং (ফাইল রিকোয়েস্ট বা ভেরিফিকেশন)
     if len(message.command) > 1:
         payload = message.command[1]
         
-        # যদি শর্টনার থেকে ঘুরে আসে
         if payload.startswith("verify_"):
             token_data = await tokens_db.find_one({"_id": payload})
             if not token_data or token_data.get("user_id") != user.id:
@@ -227,17 +219,14 @@ async def cmd_start(client, message):
                 if file_data:
                     await send_file_to_user(client, user.id, file_data)
                 
-            # টোকেন ডিলিট করে দেওয়া হলো যাতে ২ বার ব্যবহার করতে না পারে
             await tokens_db.delete_one({"_id": payload})
             return
     
-        # যদি ডিরেক্ট ফাইল লিংক হয়
         elif payload.startswith("file_"):
             file_data = await files_db.find_one({"_id": payload})
             if not file_data: 
                 return await message.reply("❌ দুঃখিত, ফাইলটি আমাদের ডাটাবেসে পাওয়া যায়নি!")
             
-            # শর্টনার চেক (যদি প্রিমিয়াম না হয়)
             if not is_premium and settings.get("shorteners"):
                 v_token = "verify_" + "".join(random.choices(string.ascii_letters + string.digits, k=15))
                 await tokens_db.insert_one({
@@ -257,11 +246,9 @@ async def cmd_start(client, message):
                     reply_markup=InlineKeyboardMarkup(btn)
                 )
             
-            # প্রিমিয়াম হলে ডিরেক্ট ফাইল দিয়ে দিবে
             await send_file_to_user(client, user.id, file_data)
             return
     
-    # ৪. স্টার্ট মেনু ইন্টারফেস
     if is_premium:
         valid_date = datetime.fromtimestamp(user_data['premium_until']).strftime('%Y-%m-%d %I:%M %p')
         premium_text = f"✅ হ্যাঁ [মেয়াদ: {valid_date}]"
@@ -277,11 +264,9 @@ async def cmd_start(client, message):
     
     buttons = []
     
-    # সিরিয়াল চ্যানেল বাটন লোড করা হচ্ছে (/addcmd)
     async for ch in channels_db.find():
         buttons.append([InlineKeyboardButton(ch["title"], callback_data=f"serial_{ch['_id']}")])
         
-    # ইউআরএল লিংক বাটন লোড করা হচ্ছে (/addlink)
     for name, url in settings.get("links", {}).items():
         buttons.append([InlineKeyboardButton(name, url=url)])
     
@@ -289,7 +274,6 @@ async def cmd_start(client, message):
 
 @app.on_callback_query(filters.regex("check_joined")) 
 async def callback_check_joined(client, query): 
-    """জয়েন করেছে কিনা চেক করার কলব্যাক""" 
     if await check_force_sub(client, query.from_user.id): 
         await query.message.delete()
         await cmd_start(client, query.message) 
@@ -297,10 +281,8 @@ async def callback_check_joined(client, query):
         await query.answer("আপনি এখনো সব চ্যানেলে জয়েন করেননি! দয়া করে জয়েন করুন।", show_alert=True)
 
 # ================= সিরিয়াল চ্যানেল লজিক এবং স্কিপ সিস্টেম =================
-
 @app.on_callback_query(filters.regex(r"^serial_(.*)")) 
 async def callback_serial_files(client, query): 
-    """সিরিয়াল বাটনে ক্লিক করলে ফাইল দেওয়ার লজিক""" 
     try: 
         chat_id = int(query.data.split("serial_")[1]) 
     except ValueError:
@@ -320,14 +302,12 @@ async def callback_serial_files(client, query):
     if total_files == 0:
         return await query.answer("এই চ্যানেলে এখনো কোনো ফাইল আপলোড করা হয়নি!", show_alert=True)
     
-    # লুপ সিস্টেম: ফাইল দেখা শেষ হলে আবার প্রথম থেকে শুরু হবে
     if progress >= total_files:
         progress = 0 
         await query.message.reply("✅ আপনি এই সিরিজের সকল ফাইল দেখে ফেলেছেন! আবার প্রথম থেকে দেওয়া শুরু হচ্ছে...")
         
     is_premium = user_data.get("premium_until", 0) > time.time()
     
-    # শর্টনার চেক
     if not is_premium and settings.get("shorteners"):
         v_token = "verify_" + "".join(random.choices(string.ascii_letters + string.digits, k=15))
         await tokens_db.insert_one({
@@ -356,7 +336,6 @@ async def callback_serial_files(client, query):
 
 @app.on_message(filters.command("skip") & filters.private) 
 async def cmd_skip(client, message): 
-    """ফাইল স্কিপ করার কমান্ড""" 
     channels = await channels_db.find().to_list(length=None) 
     if not channels: 
         return await message.reply("❌ বটের ডাটাবেসে কোনো সিরিয়াল চ্যানেল এড করা নেই।")
@@ -366,7 +345,6 @@ async def cmd_skip(client, message):
 
 @app.on_callback_query(filters.regex(r"^skipchan_(.*)")) 
 async def callback_skip_channel(client, query): 
-    """স্কিপ করার জন্য চ্যানেল সিলেক্ট করলে"""
     try: 
         chat_id = int(query.data.split("skipchan_")[1]) 
     except ValueError: 
@@ -385,7 +363,6 @@ async def callback_skip_channel(client, query):
         reply_markup=ForceReply(selective=True)
     )
     
-    # ইউজারের স্টেট সেভ করা হচ্ছে
     await users_db.update_one(
         {"_id": query.from_user.id}, 
         {"$set": {"awaiting_skip": {"chat_id": chat_id, "msg_id": msg.id}}}
@@ -394,7 +371,6 @@ async def callback_skip_channel(client, query):
 
 @app.on_message(filters.reply & filters.private) 
 async def handle_skip_reply(client, message): 
-    """স্কিপ নাম্বারের রিপ্লাই রিসিভ করার লজিক""" 
     user = await users_db.find_one({"_id": message.from_user.id}) 
     if not user: 
         return
@@ -410,7 +386,6 @@ async def handle_skip_reply(client, message):
             if num < 1 or num > total:
                 return await message.reply(f"❌ ইনভ্যালিড নাম্বার! দয়া করে ১ থেকে {total} এর মধ্যে একটি নাম্বার দিন।")
             
-            # ডাটাবেসে প্রগ্রেস আপডেট করে স্টেট ডিলিট করা হচ্ছে
             await users_db.update_one(
                 {"_id": message.from_user.id}, 
                 {
@@ -422,11 +397,9 @@ async def handle_skip_reply(client, message):
         except ValueError:
             await message.reply("❌ ইনভ্যালিড ইনপুট! দয়া করে শুধুমাত্র সংখ্যা (Number) লিখে রিপ্লাই দিন।")
 
-# ================= অ্যাডমিন কমান্ডস (চ্যানেল এড, স্টোর, লিংক) =================
-
+# ================= অ্যাডমিন কমান্ডস =================
 @app.on_message(filters.command("addcmd") & filters.user(ADMIN_ID)) 
 async def cmd_add_serial_channel(client, message): 
-    """সিরিয়াল চ্যানেল স্টার্ট মেনুতে এড করার কমান্ড""" 
     if len(message.command) < 2: 
         return await message.reply("⚠️ ব্যবহারবিধি: /addcmd -100xxxxxxxx\n\nঅবশ্যই বটকে ওই চ্যানেলে এডমিন থাকতে হবে।")
 
@@ -447,13 +420,12 @@ async def cmd_add_serial_channel(client, message):
 
 @app.on_message((filters.video | filters.document | filters.audio) & filters.channel) 
 async def live_auto_store_listener(client, message):
-    """চ্যানেলে নতুন ভিডিও আসলে অটো স্টোর করার লিসেনার""" 
     channel = await channels_db.find_one({"_id": message.chat.id}) 
     if channel: 
         try: 
             copied = await message.copy(DB_CHANNEL_ID) 
             await files_db.insert_one({ 
-                "_id": f"file_{copied.id}", # এটিও ফিক্স করে দিলাম, যাতে পরবর্তীতে /start কাজ করে
+                "_id": f"file_{copied.id}", 
                 "msg_id": copied.id, 
                 "source_chat": message.chat.id,
                 "original_msg_id": message.id 
@@ -464,7 +436,6 @@ async def live_auto_store_listener(client, message):
 
 @app.on_message(filters.command("autostore") & filters.user(ADMIN_ID)) 
 async def cmd_auto_store(client, message): 
-    """চ্যানেলের পুরনো ফাইলগুলো অটো স্টোর করার কমান্ড""" 
     if len(message.command) < 2: 
         return await message.reply("⚠️ ব্যবহারবিধি: /autostore https://t.me/channel_name/msg_id")
 
@@ -502,7 +473,7 @@ async def cmd_auto_store(client, message):
                     if count % 10 == 0: 
                         await status.edit(f"🔄 স্টোর হচ্ছে... এখনো পর্যন্ত {count} টি ফাইল সেভ হয়েছে ⏳")
                         
-                    await asyncio.sleep(1.5) # টেলিগ্রাম ফ্লাড লিমিট এড়াতে
+                    await asyncio.sleep(1.5) 
                 except Exception as loop_e:
                     logger.warning(f"Skipped a message due to error: {loop_e}")
                 
@@ -513,7 +484,6 @@ async def cmd_auto_store(client, message):
 
 @app.on_message(filters.command("storem") & filters.user(ADMIN_ID) & filters.reply) 
 async def store_manual(client, message): 
-    """ম্যানুয়ালি কোনো ফাইলে রিপ্লাই দিয়ে স্টোর করার কমান্ড""" 
     msg = message.reply_to_message 
     if msg.video or msg.audio or msg.document: 
         try: 
@@ -527,11 +497,10 @@ async def store_manual(client, message):
         await message.reply("দয়া করে কোনো ভিডিও, অডিও বা ফাইলে রিপ্লাই করুন।")
 
 # ================= অ্যাডমিন সেটিংস ও শর্টনার =================
-
 @app.on_message(filters.command("addsort") & filters.user(ADMIN_ID)) 
 async def cmd_add_shortener(client, message): 
     if len(message.command) < 3: 
-        return await message.reply("⚠️ ব্যবহারবিধি: /addsort domain.com api_token\nযেমন: /addsort sort.vercel.app idndjdjndnd")
+        return await message.reply("⚠️ ব্যবহারবিধি: /addsort domain.com api_token")
 
     try:
         domain = message.command[1]
@@ -625,7 +594,6 @@ async def cmd_lock(client, message):
     await message.reply(f"✅ ফরোয়ার্ড প্রটেকশন {'চালু' if new_status else 'বন্ধ'} করা হয়েছে।")
 
 # ================= রিডিম কোড ও ব্রডকাস্ট সিস্টেম =================
-
 @app.on_message(filters.command("addreed") & filters.user(ADMIN_ID)) 
 async def cmd_create_redeem(client, message): 
     if len(message.command) < 3: 
@@ -672,7 +640,6 @@ async def cmd_use_redeem(client, message):
         current_premium = max(user.get("premium_until", current_time), current_time)
         new_premium = current_premium + doc["duration"]
         
-        # প্রিমিয়াম আপডেট এবং কোড ডিলিট
         await users_db.update_one({"_id": user_id}, {"$set": {"premium_until": new_premium}})
         await redeem_db.delete_one({"_id": code}) 
         
@@ -685,12 +652,10 @@ async def cmd_use_redeem(client, message):
 @app.on_message(filters.command("brodcast") & filters.user(ADMIN_ID) & filters.reply) 
 async def cmd_broadcast(client, message): 
     msg_to_broadcast = message.reply_to_message
-
     status = await message.reply("📢 ব্রডকাস্ট প্রসেস শুরু হয়েছে... দয়া করে অপেক্ষা করুন। ⏳")
     
     success_count = 0
     failed_count = 0
-    
     users_cursor = users_db.find({}, {"_id": 1})
     
     async for u in users_cursor:
@@ -705,7 +670,7 @@ async def cmd_broadcast(client, message):
         except Exception:
             failed_count += 1
             
-        await asyncio.sleep(0.05) # সার্ভারের উপর চাপ কমাতে 
+        await asyncio.sleep(0.05) 
         
     await status.edit(
         f"✅ **ব্রডকাস্ট সফলভাবে সম্পন্ন হয়েছে!**\n\n"
@@ -714,7 +679,6 @@ async def cmd_broadcast(client, message):
     )
 
 # ================= Render Anti-Crash Server =================
-
 async def web_handler(request): 
     return web.Response(text="✅ Ultimate Pro Telegram Bot is Alive and Running!")
 
@@ -728,29 +692,27 @@ async def start_web_server():
     logger.info(f"✅ Web server started on port {PORT} for Render Health Check.")
 
 async def main(): 
-    # 1. ওয়েব সার্ভার প্রথমে স্টার্ট হবে যাতে Render কখনোই এরর না দেয়
+    # ১. ডাটাবেস সবার আগে কানেক্ট হবে (ইভেন্ট লুপের ভেতরে)
+    await init_db()
+    
+    # ২. ওয়েব সার্ভার স্টার্ট হবে 
     await start_web_server()
     
-    # 2. এন্টি-ক্র্যাশ লজিক: API_ID ভুল হলেও কোড স্টপ হবে না
     if API_ID == 0 or not API_HASH or not BOT_TOKEN:
-        logger.critical("❌ ERROR: আপনার API_ID, API_HASH অথবা BOT_TOKEN ভুল বা খালি আছে!")
-        logger.critical("বট রান করবে না, কিন্তু Render-এ এটি Live দেখাবে। দয়া করে Environment Variables ঠিক করুন!")
-        await asyncio.Event().wait() # কোডটি অনন্তকাল বাঁচিয়ে রাখবে
+        logger.critical("❌ ERROR: API_ID, API_HASH অথবা BOT_TOKEN ভুল বা খালি আছে!")
+        await asyncio.Event().wait() 
         return
         
-    # 3. সবকিছু ঠিক থাকলে Pyrogram বট চালু হবে
     try:
         logger.info("Starting Pyrogram Bot...")
         await app.start()
-        logger.info("🎉 Bot is Live and Ready!")
+        logger.info("🎉 Bot is Live and Ready! Commands will work now!")
         await idle()
         await app.stop()
     except Exception as e:
         logger.critical(f"❌ BOT CRASHED DURING START: {e}")
-        logger.critical("নিশ্চিত করুন যে আপনার API_ID এবং BOT_TOKEN একদম সঠিক।")
-        await asyncio.Event().wait() # কোডটি অনন্তকাল বাঁচিয়ে রাখবে
+        await asyncio.Event().wait() 
 
-# Fixed: name এবং main এর বদলে __name__ এবং "__main__" হবে, আর asyncio.run() যুক্ত করা হয়েছে
 if __name__ == "__main__": 
     try:
         asyncio.run(main())
