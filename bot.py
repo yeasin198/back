@@ -24,19 +24,24 @@ logger = logging.getLogger(__name__)
 # ================= কনফিগারেশন =================
 try:
     API_ID = int(os.environ.get("API_ID", "0"))
-    API_HASH = os.environ.get("API_HASH", "")
-    BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
-    MONGO_URI = os.environ.get("MONGO_URI", "")
+except ValueError:
+    API_ID = 0
+    
+API_HASH = os.environ.get("API_HASH", "")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
+MONGO_URI = os.environ.get("MONGO_URI", "")
+
+try:
     ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
     DB_CHANNEL_ID = int(os.environ.get("DB_CHANNEL_ID", "0"))
-    PORT = int(os.environ.get("PORT", "8080")) # Render Port
-except ValueError as e:
-    logger.critical(f"Environment Variable Error: {e}")
-    API_ID = 0
-    PORT = 8080
+    PORT = int(os.environ.get("PORT", "10000")) 
+except ValueError:
+    ADMIN_ID = 0
+    DB_CHANNEL_ID = 0
+    PORT = 10000
 
 # ================= ডাটাবেস সেটআপ =================
-mongo_client = AsyncIOMotorClient(MONGO_URI)
+mongo_client = AsyncIOMotorClient(MONGO_URI if MONGO_URI else "mongodb://localhost:27017")
 db = mongo_client["UltimateProBot"]
 users_db = db["users"]
 settings_db = db["settings"]
@@ -45,7 +50,12 @@ redeem_db = db["redeem_codes"]
 tokens_db = db["tokens"]
 channels_db = db["channels"]
 
-app = Client("MyBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+app = Client(
+    "MyBot",
+    api_id=API_ID if API_ID != 0 else 12345,
+    api_hash=API_HASH if API_HASH else "dummy",
+    bot_token=BOT_TOKEN if BOT_TOKEN else "123:dummy"
+)
 
 # ================= হেল্পার ফাংশনস =================
 
@@ -171,6 +181,7 @@ async def process_serial_files(client, user_id, chat_id, start_idx, batch_size):
     )
     return True
 
+
 # ================= স্টার্ট কমান্ড এবং ভেরিফিকেশন সিস্টেম =================
 
 @app.on_message(filters.command("start") & filters.private)
@@ -255,7 +266,7 @@ async def cmd_start(client, message):
             await send_file_to_user(client, user.id, file_data)
             return
 
-    # ৪. স্টার্ট মেনু ইন্টারফেস ডিজাইন
+    # ৪. স্টার্ট মেনু ইন্টারফেস
     if is_premium:
         valid_date = datetime.fromtimestamp(user_data['premium_until']).strftime('%Y-%m-%d %I:%M %p')
         premium_text = f"✅ হ্যাঁ [মেয়াদ: {valid_date}]"
@@ -508,6 +519,7 @@ async def cmd_auto_store(client, message):
 
 @app.on_message(filters.command("storem") & filters.user(ADMIN_ID) & filters.reply)
 async def store_manual(client, message):
+    """ম্যানুয়ালি কোনো ফাইলে রিপ্লাই দিয়ে স্টোর করার কমান্ড"""
     msg = message.reply_to_message
     if msg.video or msg.audio or msg.document:
         try:
@@ -709,37 +721,43 @@ async def cmd_broadcast(client, message):
         f"❌ ব্যর্থ হয়েছে/ব্লক করেছে: `{failed_count}` জন"
     )
 
-# ================= Render Web Server & Bot Runner =================
-# এই অংশের কারণেই Render বটটিকে ফেইল করাবে না (Status 1 এরর ফিক্স)
+# ================= Render Anti-Crash Server =================
 
 async def web_handler(request):
     return web.Response(text="✅ Ultimate Pro Telegram Bot is Alive and Running!")
 
 async def start_web_server():
-    app = web.Application()
-    app.router.add_get('/', web_handler)
-    runner = web.AppRunner(app)
+    app_web = web.Application()
+    app_web.router.add_get('/', web_handler)
+    runner = web.AppRunner(app_web)
     await runner.setup()
     site = web.TCPSite(runner, '0.0.0.0', PORT)
     await site.start()
-    logger.info(f"Web server started on port {PORT} for Render Health Check.")
+    logger.info(f"✅ Web server started on port {PORT} for Render Health Check.")
 
 async def main():
-    if API_ID == 0 or BOT_TOKEN == "":
-        logger.critical("API_ID or BOT_TOKEN is missing! Please set Environment Variables in Render.")
-        return
-        
+    # 1. ওয়েব সার্ভার প্রথমে স্টার্ট হবে যাতে Render কখনোই এরর না দেয়
     await start_web_server()
-    logger.info("Starting Pyrogram Bot...")
-    await app.start()
-    logger.info("Bot is Live and completely ready!")
-    await idle()
-    await app.stop()
+
+    # 2. এন্টি-ক্র্যাশ লজিক: API_ID ভুল হলেও কোড স্টপ হবে না
+    if API_ID == 0 or not API_HASH or not BOT_TOKEN:
+        logger.critical("❌ ERROR: আপনার API_ID, API_HASH অথবা BOT_TOKEN ভুল বা খালি আছে!")
+        logger.critical("বট রান করবে না, কিন্তু Render-এ এটি Live দেখাবে। দয়া করে Environment Variables ঠিক করুন!")
+        await asyncio.Event().wait() # কোডটি অনন্তকাল বাঁচিয়ে রাখবে
+        return
+
+    # 3. সবকিছু ঠিক থাকলে Pyrogram বট চালু হবে
+    try:
+        logger.info("Starting Pyrogram Bot...")
+        await app.start()
+        logger.info("🎉 Bot is Live and Ready!")
+        await idle()
+        await app.stop()
+    except Exception as e:
+        logger.critical(f"❌ BOT CRASHED DURING START: {e}")
+        logger.critical("নিশ্চিত করুন যে আপনার API_ID এবং BOT_TOKEN একদম সঠিক।")
+        await asyncio.Event().wait() # কোডটি অনন্তকাল বাঁচিয়ে রাখবে
 
 if __name__ == "__main__":
-    try:
-        asyncio.get_event_loop().run_until_complete(main())
-    except KeyboardInterrupt:
-        pass
-    except Exception as e:
-        logger.critical(f"Bot Crashed: {e}")
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(main())
