@@ -23,17 +23,17 @@ logger = logging.getLogger(__name__)
 
 # ================= কনফিগারেশন =================
 try:
-    API_ID = int(os.environ.get("API_ID", "0"))
+    API_ID = int(os.environ.get("API_ID", "29904834"))
 except ValueError:
     API_ID = 0
     
-API_HASH = os.environ.get("API_HASH", "")
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
-MONGO_URI = os.environ.get("MONGO_URI", "")
+API_HASH = os.environ.get("API_HASH", "8b4fd9ef578af114502feeafa2d31938")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8915927925:AAGCRPRRqniqN9JMe-nr8JneEjTkFFcFlNg")
+MONGO_URI = os.environ.get("MONGO_URI", "mongodb+srv://FlixBixs:FlixBixs@cluster0.awkvdsd.mongodb.net/?appName=Cluster0")
 
 try:
-    ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
-    DB_CHANNEL_ID = int(os.environ.get("DB_CHANNEL_ID", "0"))
+    ADMIN_ID = int(os.environ.get("ADMIN_ID", "7120801813"))
+    DB_CHANNEL_ID = int(os.environ.get("DB_CHANNEL_ID", "-1004394830681"))
     PORT = int(os.environ.get("PORT", "10000")) 
 except ValueError:
     ADMIN_ID = 0
