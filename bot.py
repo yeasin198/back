@@ -7,8 +7,9 @@ import aiohttp
 import urllib.parse
 import logging
 from datetime import datetime
+from aiohttp import web
 
-from pyrogram import Client, filters
+from pyrogram import Client, filters, idle
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ForceReply
 from pyrogram.errors import UserNotParticipant, FloodWait, ChatAdminRequired
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -21,12 +22,18 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ================= কনফিগারেশন =================
-API_ID = int(os.environ.get("API_ID", "আপনার_এপিআই_আইডি"))
-API_HASH = os.environ.get("API_HASH", "আপনার_এপিআই_হ্যাশ")
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "আপনার_বট_টোকেন")
-MONGO_URI = os.environ.get("MONGO_URI", "আপনার_মঙ্গোডিবি_ইউআরএল")
-ADMIN_ID = int(os.environ.get("ADMIN_ID", "আপনার_টেলিগ্রাম_আইডি"))
-DB_CHANNEL_ID = int(os.environ.get("DB_CHANNEL_ID", "-100আপনার_ডাটাবেস_চ্যানেল_আইডি"))
+try:
+    API_ID = int(os.environ.get("API_ID", "0"))
+    API_HASH = os.environ.get("API_HASH", "")
+    BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
+    MONGO_URI = os.environ.get("MONGO_URI", "")
+    ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
+    DB_CHANNEL_ID = int(os.environ.get("DB_CHANNEL_ID", "0"))
+    PORT = int(os.environ.get("PORT", "8080")) # Render Port
+except ValueError as e:
+    logger.critical(f"Environment Variable Error: {e}")
+    API_ID = 0
+    PORT = 8080
 
 # ================= ডাটাবেস সেটআপ =================
 mongo_client = AsyncIOMotorClient(MONGO_URI)
@@ -248,7 +255,7 @@ async def cmd_start(client, message):
             await send_file_to_user(client, user.id, file_data)
             return
 
-    # ৪. স্টার্ট মেনু ইন্টারফেস
+    # ৪. স্টার্ট মেনু ইন্টারফেস ডিজাইন
     if is_premium:
         valid_date = datetime.fromtimestamp(user_data['premium_until']).strftime('%Y-%m-%d %I:%M %p')
         premium_text = f"✅ হ্যাঁ [মেয়াদ: {valid_date}]"
@@ -499,6 +506,20 @@ async def cmd_auto_store(client, message):
         logger.error(f"Autostore failed: {e}")
         await message.reply(f"❌ এরর দেখা দিয়েছে:\n`{str(e)}`\n\nসঠিক লিংক দিয়েছেন কিনা চেক করুন।")
 
+@app.on_message(filters.command("storem") & filters.user(ADMIN_ID) & filters.reply)
+async def store_manual(client, message):
+    msg = message.reply_to_message
+    if msg.video or msg.audio or msg.document:
+        try:
+            copied = await msg.copy(DB_CHANNEL_ID)
+            file_id = f"file_{copied.id}"
+            await files_db.insert_one({"_id": file_id, "msg_id": copied.id, "source_chat": "manual"})
+            await message.reply(f"✅ ফাইল স্টোর হয়েছে!\nলিংক: `https://t.me/{client.me.username}?start={file_id}`")
+        except Exception as e:
+            await message.reply(f"❌ স্টোর করতে সমস্যা হয়েছে: {e}")
+    else:
+        await message.reply("দয়া করে কোনো ভিডিও, অডিও বা ফাইলে রিপ্লাই করুন।")
+
 
 # ================= অ্যাডমিন সেটিংস ও শর্টনার =================
 
@@ -520,6 +541,18 @@ async def cmd_add_shortener(client, message):
     except Exception as e:
         await message.reply(f"❌ এরর: `{e}`")
 
+@app.on_message(filters.command("delsort") & filters.user(ADMIN_ID))
+async def cmd_del_shortener(client, message):
+    if len(message.command) < 2:
+        return await message.reply("⚠️ ব্যবহারবিধি: `/delsort domain.com`")
+    try:
+        domain = message.command[1]
+        key_name = domain.replace('.', '_')
+        await settings_db.update_one({"_id": "config"}, {"$unset": {f"shorteners.{key_name}": ""}})
+        await message.reply(f"✅ শর্টনার ডিলিট হয়েছে।")
+    except Exception as e:
+        await message.reply(f"❌ এরর: `{e}`")
+
 @app.on_message(filters.command("addlink") & filters.user(ADMIN_ID))
 async def cmd_add_url_link(client, message):
     if len(message.command) < 3:
@@ -530,6 +563,17 @@ async def cmd_add_url_link(client, message):
         url = message.command[2]
         await settings_db.update_one({"_id": "config"}, {"$set": {f"links.{name}": url}})
         await message.reply(f"✅ স্টার্ট মেনুতে '{name}' নামের লিংক বাটন এড করা হয়েছে।")
+    except Exception as e:
+        await message.reply(f"❌ এরর: `{e}`")
+
+@app.on_message(filters.command("dellink") & filters.user(ADMIN_ID))
+async def cmd_del_url_link(client, message):
+    if len(message.command) < 2:
+        return await message.reply("⚠️ ব্যবহারবিধি: `/dellink [Button_Name]`")
+    try:
+        name = message.command[1]
+        await settings_db.update_one({"_id": "config"}, {"$unset": {f"links.{name}": ""}})
+        await message.reply(f"✅ বাটন লিংক ডিলিট করা হয়েছে।")
     except Exception as e:
         await message.reply(f"❌ এরর: `{e}`")
 
@@ -556,6 +600,24 @@ async def cmd_set_delete(client, message):
         await message.reply(f"✅ অটো ডিলিট টাইমার {sec} সেকেন্ড সেট করা হয়েছে। (0 দিলে ডিলিট হবে না)")
     except ValueError:
         await message.reply("❌ দয়া করে একটি সঠিক সংখ্যা দিন।")
+
+@app.on_message(filters.command("setmast") & filters.user(ADMIN_ID))
+async def cmd_set_mast(client, message):
+    if len(message.command) < 2:
+        return await message.reply("⚠️ ব্যবহারবিধি: `/setmast -100xxxxxxxx`")
+    try:
+        chat_id = message.command[1]
+        await settings_db.update_one({"_id": "config"}, {"$addToSet": {"force_subs": chat_id}})
+        await message.reply(f"✅ ফোর্স সাবস্ক্রাইব চ্যানেল এড করা হয়েছে: {chat_id}")
+    except Exception as e:
+        await message.reply(f"❌ এরর: `{e}`")
+
+@app.on_message(filters.command("lock") & filters.user(ADMIN_ID))
+async def cmd_lock(client, message):
+    settings = await get_settings()
+    new_status = not settings.get("locked", False)
+    await settings_db.update_one({"_id": "config"}, {"$set": {"locked": new_status}})
+    await message.reply(f"✅ ফরোয়ার্ড প্রটেকশন {'চালু' if new_status else 'বন্ধ'} করা হয়েছে।")
 
 
 # ================= রিডিম কোড ও ব্রডকাস্ট সিস্টেম =================
@@ -625,7 +687,6 @@ async def cmd_broadcast(client, message):
     success_count = 0
     failed_count = 0
     
-    # সকল ইউজার লোড করা হচ্ছে
     users_cursor = users_db.find({}, {"_id": 1})
     
     async for u in users_cursor:
@@ -648,10 +709,37 @@ async def cmd_broadcast(client, message):
         f"❌ ব্যর্থ হয়েছে/ব্লক করেছে: `{failed_count}` জন"
     )
 
+# ================= Render Web Server & Bot Runner =================
+# এই অংশের কারণেই Render বটটিকে ফেইল করাবে না (Status 1 এরর ফিক্স)
+
+async def web_handler(request):
+    return web.Response(text="✅ Ultimate Pro Telegram Bot is Alive and Running!")
+
+async def start_web_server():
+    app = web.Application()
+    app.router.add_get('/', web_handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', PORT)
+    await site.start()
+    logger.info(f"Web server started on port {PORT} for Render Health Check.")
+
+async def main():
+    if API_ID == 0 or BOT_TOKEN == "":
+        logger.critical("API_ID or BOT_TOKEN is missing! Please set Environment Variables in Render.")
+        return
+        
+    await start_web_server()
+    logger.info("Starting Pyrogram Bot...")
+    await app.start()
+    logger.info("Bot is Live and completely ready!")
+    await idle()
+    await app.stop()
 
 if __name__ == "__main__":
-    logger.info("Ultimate Production Bot is Starting...")
     try:
-        app.run()
+        asyncio.get_event_loop().run_until_complete(main())
+    except KeyboardInterrupt:
+        pass
     except Exception as e:
-        logger.critical(f"Failed to start bot: {e}")
+        logger.critical(f"Bot Crashed: {e}")
